@@ -134,3 +134,25 @@ def get_response_log_probs(
     
     return result
     
+
+def masked_normalize(
+    tensor: torch.Tensor,
+    mask: torch.Tensor,
+    normalize_constant: float,
+    dim: int | None= None,
+    ) -> torch.Tensor:
+    """
+    Sum over tensor elemtns and normaizes by a constant
+    respected to a boolean mask.
+    
+    Args:
+        tensor: torch.Tensor The tensor to sum over.
+        mask: torch.Tensor A boolean mask of the same shape as tensor.
+        normalize_constant: float The constant to normalize by.
+        dim: int | None The dimension to sum over. If None, sum over all dimensions
+    Returns:
+        torch.Tensor: The normalized tensor.
+    """
+
+    tensor_sum = torch.sum(tensor * mask, dim=dim)
+    return tensor_sum / normalize_constant
