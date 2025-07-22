@@ -71,3 +71,31 @@ def tokenize_prompt_and_output(
         "labels": labels,
         "response_mask": response_mask,
     }
+
+def compute_entropy(logits: torch.Tensor) -> torch.Tensor:
+    """
+    Shannon entropy H(p) = -Σ p * log p  
+    This implementation works on raw logits without converting them to explicit
+    probabilities first and is fully vectorised.    
+    
+    Args:
+        logits: torch.Tensor of shape (batch_size, seq_length, vocab_size) containing the logits.
+    Returns:
+        torch.Tensor of shape (batch_size, seq_length) containing the entropy for each next token.
+    """
+
+    # exp keps numberical stability
+    p_numerator = torch.exp(logits)
+
+    # Z = Σ_j e^{logit_j}
+    # shape: (batch_size, seq_length, 1)
+    p_denom = torch.sum(p_numerator, dim=-1, keepdim=True)
+
+    # log p_j = logit_j − log Σ_k e^{logit_k}
+    log_prob = logits - torch.logsumexp(logits, dim=-1, keepdim=True)
+
+    # p * log p  (component-wise contribution to entropy
+    summands = (p_numerator / p_denom) * log_prob
+
+    # H(p) = −Σ_j p_j log p_j
+    return -torch.sum(summands, dim=-1)
