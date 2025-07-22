@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 from transformers import PreTrainedTokenizer, PreTrainedModel
-from typing import List, Dict
+from typing import List, Dict, Any, Callable
 
 def tokenize_prompt_and_output(
     prompt_strs: List[str],
@@ -142,9 +142,8 @@ def masked_normalize(
     dim: int | None= None,
     ) -> torch.Tensor:
     """
-    Sum over tensor elemtns and normaizes by a constant
-    respected to a boolean mask.
-    
+    Sum over tensor elements and normaizes by a constant respected to a boolean mask.
+
     Args:
         tensor: torch.Tensor The tensor to sum over.
         mask: torch.Tensor A boolean mask of the same shape as tensor.
@@ -156,3 +155,108 @@ def masked_normalize(
 
     tensor_sum = torch.sum(tensor * mask, dim=dim)
     return tensor_sum / normalize_constant
+
+
+def sft_microbatch_train_step(
+    policy_log_probs: torch.Tensor,
+    response_mask: torch.Tensor,
+    gradient_accumulation_steps: int,
+    normalize_constant: float = 1.0,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """
+    Perform a single training step on a microbatch of data.
+    Args:
+        policy_log_probs: torch.Tensor of shape (batch_size, seq_length) containing the log probabilities of the policy.
+        response_mask: torch.Tensor of shape (batch_size, seq_length) containing the response mask.
+        gradient_accumulation_steps: int The number of gradient accumulation steps.
+        normalize_constant: float The constant to normalize by.
+    Returns:
+        tuple[torch.Tensor, dict[str, torch.Tensor]]: A tuple containing:
+            - loss: torch.Tensor The computed loss.
+            - loss_metadata: dict[str, torch.Tensor] Metadata about the loss, including gradient accumulation steps and normalize constant.
+    """
+
+    # Compute the loss
+    loss = (-masked_normalize(policy_log_probs, response_mask, normalize_constant, -1)).mean()
+    loss /= gradient_accumulation_steps
+
+    loss.backward()
+
+    loss_metadata = {
+        'gradient_accumulation_steps': gradient_accumulation_steps,
+        'normalize_constant': normalize_constant
+    }
+
+    return (loss, loss_metadata)
+
+
+def log_generations(
+    prompts: List[str],
+    generated_responses: List[str],
+    ground_truth_responses: List[str],
+    reward_infos: List[Dict[str, Any]],
+    avg_token_entropies: List[float],
+    response_lengths: List[int],
+) -> Dict[str, Any]:
+    """
+    Logs pre-generated responses and computes aggregate statistics.
+
+    This function is designed to be called within a training or generation loop
+    with pre-computed data.
+
+    Args:
+        prompts: A list of prompts.
+        generated_responses: A list of generated responses.
+        ground_truth_responses: A list of ground-truth responses.
+        reward_infos: A list of dictionaries containing reward information for each example.
+        avg_token_entropies: A list of average token entropies for each generated response.
+        response_lengths: A list of lengths for each generated response.
+
+    Returns:
+        A dictionary containing per-example logs and aggregate statistics.
+    """
+    per_example_logs = []
+    total_response_len = 0
+    correct_response_len = 0
+    incorrect_response_len = 0
+    num_correct = 0
+
+    for i in range(len(prompts)):
+        reward_info = reward_infos[i]
+        response_len = response_lengths[i]
+
+        per_example_logs.append({
+            "prompt": prompts[i],
+            "generated_response": generated_responses[i],
+            "ground_truth_response": ground_truth_responses[i],
+            "reward_info": reward_info,
+            "avg_token_entropy": avg_token_entropies[i],
+            "response_length": response_len,
+        })
+
+        total_response_len += response_len
+        # Assuming 'answer_reward' of 1 means correct
+        if reward_info.get("answer_reward", 0) == 1:
+            num_correct += 1
+            correct_response_len += response_len
+        else:
+            incorrect_response_len += response_len
+
+    num_incorrect = len(prompts) - num_correct
+    avg_response_len = total_response_len / len(prompts) if prompts else 0
+    avg_correct_response_len = correct_response_len / num_correct if num_correct > 0 else 0
+    avg_incorrect_response_len = incorrect_response_len / num_incorrect if num_incorrect > 0 else 0
+
+    aggregate_stats = {
+        "avg_response_length": avg_response_len,
+        "avg_correct_response_length": avg_correct_response_len,
+        "avg_incorrect_response_length": avg_incorrect_response_len,
+        "num_correct": num_correct,
+        "num_incorrect": num_incorrect,
+        "total_samples": len(prompts),
+    }
+
+    return {
+        "per_example_logs": per_example_logs,
+        "aggregate_stats": aggregate_stats,
+    }
