@@ -1,6 +1,6 @@
 import torch
 import torch.nn.functional as F
-from transformers import PreTrainedTokenizer
+from transformers import PreTrainedTokenizer, PreTrainedModel
 from typing import List, Dict
 
 def tokenize_prompt_and_output(
@@ -87,15 +87,50 @@ def compute_entropy(logits: torch.Tensor) -> torch.Tensor:
     # exp keps numberical stability
     p_numerator = torch.exp(logits)
 
-    # Z = Σ_j e^{logit_j}
+    # Z = Σ_j e^{logit_j}, sum over vocab size j
     # shape: (batch_size, seq_length, 1)
     p_denom = torch.sum(p_numerator, dim=-1, keepdim=True)
 
-    # log p_j = logit_j − log Σ_k e^{logit_k}
+    # log p_j = logit_j − log Σ_k e^{logit_k} 
     log_prob = logits - torch.logsumexp(logits, dim=-1, keepdim=True)
 
-    # p * log p  (component-wise contribution to entropy
+    # p * log p  (component-wise contribution to entropy)
     summands = (p_numerator / p_denom) * log_prob
 
     # H(p) = −Σ_j p_j log p_j
     return -torch.sum(summands, dim=-1)
+
+def get_response_log_probs(
+    model: PreTrainedModel,
+    input_ids: torch.Tensor,
+    labels: torch.Tensor,
+    return_token_entropy: bool = False,
+    ) -> dict[str, torch.Tensor]:
+    """
+    Get the log probabilities of the labels given the input_ids.
+    Args:
+        model: PreTrainedModel The model to use for computing the logits.
+        input_ids: torch.Tensor of shape (batch_size, seq_length) containing the input ids.
+        labels: torch.Tensor of shape (batch_size, seq_length) containing the labels.
+        return_token_entropy: bool Whether to return the entropy of the logits.
+    Returns:
+        dict[str, torch.Tensor]: A dictionary containing:
+    """
+
+    logits = model(input_ids).logits
+
+    # Get the log probabilities of the labels
+    log_probs = F.log_softmax(logits, dim=-1)
+    log_probs = torch.gather(log_probs, dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)
+
+    # Setup return dictionary
+    result = {
+        "log_probs": log_probs,
+    }
+
+    if return_token_entropy:
+        # Compute the entropy of the logits
+        result["entropy"] = compute_entropy(logits)
+    
+    return result
+    
