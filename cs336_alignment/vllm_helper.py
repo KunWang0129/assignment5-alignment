@@ -3,8 +3,12 @@ from vllm.model_executor import set_random_seed as vllm_set_random_seed
 from transformers import PreTrainedModel, AutoModelForCausalLM, AutoTokenizer
 from unittest.mock import patch
 import torch
+import re
+import os
+import json
 from typing import Callable, List, Dict
 
+ANS_RE = re.compile(r"####\s*([\-0-9\.\,]+)")
 
 MODEL_PATH = '/kun-data/assignment5-alignment/models/Qwen/Qwen2.5-Math-1.5B'
 
@@ -57,48 +61,73 @@ def load_policy_into_vllm_instance(policy: PreTrainedModel, llm: LLM):
     llm_model = llm.llm_engine.model_executor.driver_worker.model_runner.model
     llm_model.load_weights(state_dict.items())
 
-def evaluate_vllm(
-    vllm_model: LLM,
-    reward_fn: Callable[[str, str], Dict[str, float]],
-    data: List[Dict[str, str]],
-    prompts: List[str],
-    eval_sampling_params: SamplingParams,
-) -> [Dict[str, int], List[Dict[str, str]], List[Dict[str, str]]]:
-    """
-    Evaluate a language model on a list of prompts,
-    compute evaluation metrics, and return the results.
-    """
-    print(f"Generating responses for {len(prompts)} prompts...")
-    outputs = vllm_model.generate(prompts, eval_sampling_params)
-    
-    counts = {'correct': 0, 'wrong_answer': 0, 'wrong_format': 0}
-    format_errors = []
-    answer_errors = []
+def extract_reference_answer(answer: str) -> str:
+    match = ANS_RE.search(answer)
+    if match:
+        return match.group(1).strip().replace(",", "")
+    return "[invalid]"
 
-    print(f"Evaluating {len(outputs)} generated responses...")
-    for i, output in enumerate(outputs):
-        generated_text = output.outputs[0].text
-        ground_truth = data[i]['answer']
-        
-        reward_info = reward_fn(ground_truth, generated_text)
-        
-        if reward_info['correctness']:
-            counts['correct'] += 1
-        elif reward_info['format_is_correct']:
-            counts['wrong_answer'] += 1
-            answer_errors.append({
-                'prompt': output.prompt,
-                'generated_text': generated_text,
-                'ground_truth': ground_truth,
-                'parsed_answer': reward_info['parsed_answer'],
-                'expected_answer': reward_info['expected_answer']
+def evaluate_vllm(
+    data: List[Dict],
+    vllm_model: LLM,
+    reward_fn: Callable[[str, str], dict[str, float]],
+    prompts: List[str],
+    eval_sampling_params: SamplingParams
+) -> None:
+    # 3. Generate outputs for each example
+    outputs = vllm_model.generate(prompts, eval_sampling_params)
+    generated_texts = [output.outputs[0].text.strip() for output in outputs]
+
+    # 4. Calculate evaluation metrics and collect examples
+    results = []
+    counts = {
+        "correct": 0,
+        "wrong_answer": 0,
+        "wrong_format": 0
+    }
+
+    format_error_examples = []
+    answer_error_examples = []
+
+    for prompt, generated_text, example in zip(prompts, generated_texts, data):
+        ground_truth = example["answer"]
+        reference_answer = extract_reference_answer(ground_truth)
+        metrics = reward_fn(generated_text, reference_answer)
+
+        if metrics["format_reward"] == 1 and metrics["answer_reward"] == 1:
+            counts["correct"] += 1
+        elif metrics["format_reward"] == 1 and metrics["answer_reward"] == 0:
+            counts["wrong_answer"] += 1
+            answer_error_examples.append({
+                "prompt": prompt,
+                "response": generated_text,
+                "reference_answer": ground_truth,
+                "reference_answer_extracted": reference_answer
             })
         else:
-            counts['wrong_format'] += 1
-            format_errors.append({
-                'prompt': output.prompt,
-                'generated_text': generated_text,
-                'ground_truth': ground_truth
+            counts["wrong_format"] += 1
+            format_error_examples.append({
+                "prompt": prompt,
+                "response": generated_text,
+                "reference_answer": ground_truth,
+                "reference_answer_extracted": reference_answer
             })
 
-    return counts, format_errors, answer_errors
+        results.append({
+            "prompt": prompt,
+            "response": generated_text,
+            "reference_answer": ground_truth,
+            "reference_answer_extracted": reference_answer,
+            "metrics": metrics
+        })
+
+    # 5. Save results
+    os.makedirs("outputs", exist_ok=True)
+    OUTPUT_PATH = os.path.join("outputs", "eval_results.jsonl")
+    with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
+        for result in results:
+            f.write(json.dumps(result, ensure_ascii=False) + "\n")
+
+    print(f"Evaluation results saved to {OUTPUT_PATH}")
+
+    return counts, format_error_examples, answer_error_examples

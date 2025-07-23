@@ -124,7 +124,7 @@ def main(args):
                 # should use micro step...
                 response_log_probs = get_response_log_probs(model, input_ids, labels, return_token_entropy=True)
                 log_probs = response_log_probs["log_probs"]
-                entropy = response_log_probs["token_entropy"]
+                entropy = response_log_probs["entropy"]
 
                 next_batch = get_batch(tokenized_train_data, micro_batch_size, device_train)
 
@@ -226,7 +226,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     wandb.init(
-        entity="koala34025-national-tsing-hua-university",
+        entity="kunwang03",
         project="sft_experiment",
         config=args,
     )
