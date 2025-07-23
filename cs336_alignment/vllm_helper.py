@@ -1,8 +1,10 @@
-from vllm import LLM
+from vllm import LLM, SamplingParams
 from vllm.model_executor import set_random_seed as vllm_set_random_seed
 from transformers import PreTrainedModel, AutoModelForCausalLM, AutoTokenizer
 from unittest.mock import patch
 import torch
+from typing import Callable, List, Dict
+
 
 MODEL_PATH = '/kun-data/assignment5-alignment/models/Qwen/Qwen2.5-Math-1.5B'
 
