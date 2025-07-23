@@ -140,7 +140,7 @@ def main(args):
     vllm_set_random_seed(SEED)
 
     num_train_sample = args.num_train_sample
-    model_id = "Qwen/Qwen2.5-Math-1.5B"
+    model_id = '/kun-data/assignment5-alignment/models/Qwen/Qwen2.5-Math-1.5B'
     device_train = "cuda:2"
     device_vllm = "cuda"
     output_dir = "./outputs/sft"
