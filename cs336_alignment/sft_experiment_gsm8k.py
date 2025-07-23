@@ -79,7 +79,7 @@ def train_step(model, optimizer, amp_ctx, train_batch, n_grad_accum_steps, i_sft
     with amp_ctx:
         response_log_probs = get_response_log_probs(model, train_batch["input_ids"], train_batch["labels"], return_token_entropy=True)
         log_probs = response_log_probs["log_probs"]
-        entropy = response_log_probs["token_entropy"]
+        entropy = response_log_probs["entropy"]
 
         loss, _ = sft_microbatch_train_step(log_probs, train_batch["response_mask"], n_grad_accum_steps)
         loss.backward()
