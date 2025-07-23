@@ -100,8 +100,7 @@ def train_step(model, optimizer, amp_ctx, train_batch, n_grad_accum_steps, i_sft
     
     return get_batch(tokenized_train_data, micro_batch_size, device_train)
 
-def train(args, model, tokenizer, optimizer, tokenized_train_data, vllm, test_data, formatted_test_prompts):
-    device_train = "cuda:2"
+def train(args, model, tokenizer, optimizer, tokenized_train_data, vllm, test_data, formatted_test_prompts, device_train = "cuda:1"):
     micro_batch_size = 2
     n_sft_steps = 64
     n_grad_accum_steps = 32
@@ -183,6 +182,7 @@ def main(args):
         vllm,
         test_data,
         formatted_test_prompts,
+        device_train
     )
 
     if n_sft_steps > 0 and n_sft_steps % eval_steps != 0:
