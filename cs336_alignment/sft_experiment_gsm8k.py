@@ -16,22 +16,15 @@ from cs336_alignment.sft_helper import (
     get_response_log_probs,
     sft_microbatch_train_step,
 )
-from cs336_alignment.evaluate_gsm8k import evaluate_vllm
+from cs336_alignment.utils_gsm8k import (
+    load_gsm8k_data,
+    format_data,
+    evaluate_vllm,
+)
 from cs336_alignment.vllm_helper import init_vllm, load_policy_into_vllm_instance
 
 
-def load_jsonl(file_path):
-    data = []
-    with open(file_path, "r", encoding="utf-8") as f:
-        for line in f:
-            data.append(json.loads(line.strip()))
-    return data
 
-
-def format_prompt_with_template(question: str, template_path: str) -> str:
-    with open(template_path, "r", encoding="utf-8") as f:
-        template = f.read()
-    return template.format(question=question)
 
 
 def get_batch(
@@ -159,26 +152,49 @@ def main(args):
     optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5)
 
     vllm = init_vllm(model_id, device_vllm, seed=SEED, gpu_memory_utilization=0.9)
-    
-    train_data = load_jsonl(train_file_path)
+
+    train_data = load_gsm8k_data(train_file_path)
     if num_train_sample is not None:
         train_data = train_data[:num_train_sample]
-    test_data = load_jsonl(test_file_path)
+    test_data = load_gsm8k_data(test_file_path)
+
+    with open(TEMPLATE_PATH, "r", encoding="utf-8") as f:
+        prompt_template = f.read()
+
+    format_prompt_fn = lambda q: prompt_template.format(question=q)
+
+    formatted_train_data = format_data(train_data, format_prompt_fn)
+    formatted_test_data = format_data(test_data, format_prompt_fn)
 
     tokenized_train_data = tokenize_prompt_and_output(
-        [data["prompt"] for data in train_data],
-        [data["response"] for data in train_data],
-        tokenizer
+        [d["prompt"] for d in formatted_train_data],
+        [d["response"] for d in formatted_train_data],
+        tokenizer,
     )
-    
-    formatted_test_prompts = [
-        format_prompt_with_template(example["question"], TEMPLATE_PATH) for example in test_data
-    ]
 
-    model, n_sft_steps, eval_steps = train(args, model, tokenizer, optimizer, tokenized_train_data, vllm, test_data, formatted_test_prompts)
-    
+    formatted_test_prompts = [d["prompt"] for d in formatted_test_data]
+
+    model, n_sft_steps, eval_steps = train(
+        args,
+        model,
+        tokenizer,
+        optimizer,
+        tokenized_train_data,
+        vllm,
+        test_data,
+        formatted_test_prompts,
+    )
+
     if n_sft_steps > 0 and n_sft_steps % eval_steps != 0:
-        test(model, vllm, test_data, formatted_test_prompts, n_sft_steps, output_dir, tokenizer)
+        test(
+            model,
+            vllm,
+            test_data,
+            formatted_test_prompts,
+            n_sft_steps,
+            output_dir,
+            tokenizer,
+        )
 
 
 if __name__ == "__main__":

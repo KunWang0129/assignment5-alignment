@@ -25,6 +25,29 @@ def get_gsm8k_answer(answer_str: str) -> str:
     """Extracts the final numerical answer from the gsm8k answer string."""
     return answer_str.split('####')[-1].strip()
 
+def format_data(
+    data: List[Dict[str, str]],
+    prompt_fn: Callable[[str], str],
+) -> List[Dict[str, str]]:
+    """
+    Formats the data using the provided prompt function.
+    
+    Args:
+        data: A list of dictionaries, each with 'question' and 'answer' keys.
+        prompt_fn: A function that takes a question string and returns a formatted prompt string.
+        
+    Returns:
+        A list of dictionaries, each with 'prompt' and 'response' keys.
+    """
+    formatted_data = []
+    for ex in data:
+        formatted_data.append({
+            'prompt': prompt_fn(ex['question']),
+            'response': ex['answer'],
+        })
+    return formatted_data
+
+
 def evaluate_vllm(
     vllm_model: LLM,
     reward_fn: Callable[[str, str], Dict[str, float]],
@@ -113,6 +136,3 @@ def main():
         for error in answer_errors:
             f.write(json.dumps(error) + '\n')
     print("Done.")
-
-if __name__ == "__main__":
-    main()
