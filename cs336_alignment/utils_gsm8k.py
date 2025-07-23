@@ -4,6 +4,8 @@ import re
 from typing import Callable, List, Dict
 
 from vllm import LLM, SamplingParams
+from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
+
 
 # Constants
 MODEL_PATH = '/kun-data/assignment5-alignment/models/Qwen/Qwen2.5-Math-1.5B'
@@ -12,14 +14,18 @@ OUTPUT_DIR = '/kun-data/assignment5-alignment/eval_results'
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 OUTPUT_PATH = os.path.join(OUTPUT_DIR, 'gsm8k_qwen_zeroshot_results.jsonl')
 
-def load_gsm8k_data(path: str) -> List[Dict]:
+def load_jsonl(file_path):
     """Loads gsm8k data from a jsonl file."""
-    with open(path, 'r') as f:
-        return [json.loads(line) for line in f]
+    data = []
+    with open(file_path, "r", encoding="utf-8") as f:
+        for line in f:
+            data.append(json.loads(line.strip()))
+    return data
 
-def format_prompt_r1_zero(question: str) -> str:
-    """Formats a question using the r1_zero prompt format."""
-    return f"Question: {question}\nAnswer:"
+def format_prompt_with_template(question: str, template_path: str) -> str:
+    with open(template_path, "r", encoding="utf-8") as f:
+        template = f.read()
+    return template.format(question=question)
 
 def get_gsm8k_answer(answer_str: str) -> str:
     """Extracts the final numerical answer from the gsm8k answer string."""
@@ -47,55 +53,17 @@ def format_data(
         })
     return formatted_data
 
+def format_for_sft(file_path):
+    data = load_jsonl(file_path)
+    formatted_data = []
 
-def evaluate_vllm(
-    vllm_model: LLM,
-    reward_fn: Callable[[str, str], Dict[str, float]],
-    data: List[Dict[str, str]],
-    prompts: List[str],
-    eval_sampling_params: SamplingParams,
-) -> [Dict[str, int], List[Dict[str, str]], List[Dict[str, str]]]:
-    """
-    Evaluate a language model on a list of prompts,
-    compute evaluation metrics, and return the results.
-    """
-    print(f"Generating responses for {len(prompts)} prompts...")
-    outputs = vllm_model.generate(prompts, eval_sampling_params)
-    
-    counts = {'correct': 0, 'wrong_answer': 0, 'wrong_format': 0}
-    format_errors = []
-    answer_errors = []
-
-    print(f"Evaluating {len(outputs)} generated responses...")
-    for i, output in enumerate(outputs):
-        generated_text = output.outputs[0].text
-        ground_truth = data[i]['answer']
-        
-        reward_info = reward_fn(ground_truth, generated_text)
-        
-        if reward_info['correctness']:
-            counts['correct'] += 1
-        elif reward_info['format_is_correct']:
-            counts['wrong_answer'] += 1
-            answer_errors.append({
-                'prompt': output.prompt,
-                'generated_text': generated_text,
-                'ground_truth': ground_truth,
-                'parsed_answer': reward_info['parsed_answer'],
-                'expected_answer': reward_info['expected_answer']
-            })
-        else:
-            counts['wrong_format'] += 1
-            format_errors.append({
-                'prompt': output.prompt,
-                'generated_text': generated_text,
-                'ground_truth': ground_truth
-            })
-
-    return counts, format_errors, answer_errors
-
-
-from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
+    for ex in data:
+        question = ex['question']
+        answer = get_gsm8k_answer(ex['answer'])
+        formatted_data.append({
+            'prompt': f"Question: {question}\nAnswer: ",
+            'response': answer
+        })
 
 def main():
     """Main function to run the evaluation."""
