@@ -25,68 +25,54 @@ def get_gsm8k_answer(answer_str: str) -> str:
     """Extracts the final numerical answer from the gsm8k answer string."""
     return answer_str.split('####')[-1].strip()
 
-def gsm8k_reward_fn(ground_truth: str, generated_text: str) -> Dict[str, float]:
-    """
-    Calculates the reward for a gsm8k prediction.
-    The reward is 1.0 if the prediction matches the ground truth, and 0.0 otherwise.
-    """
-    ground_truth_answer = get_gsm8k_answer(ground_truth)
-    
-    # Extract the last number from the generated text
-    numbers = re.findall(r'\d+', generated_text)
-    if numbers:
-        predicted_answer = numbers[-1]
-    else:
-        predicted_answer = ""
-
-    is_correct = 1.0 if predicted_answer == ground_truth_answer else 0.0
-    return {'accuracy': is_correct}
-
-
 def evaluate_vllm(
     vllm_model: LLM,
     reward_fn: Callable[[str, str], Dict[str, float]],
+    data: List[Dict[str, str]],
     prompts: List[str],
-    ground_truths: List[str],
     eval_sampling_params: SamplingParams,
-    output_path: str
-) -> None:
+) -> [Dict[str, int], List[Dict[str, str]], List[Dict[str, str]]]:
     """
     Evaluate a language model on a list of prompts,
-    compute evaluation metrics, and serialize results to disk.
+    compute evaluation metrics, and return the results.
     """
     print(f"Generating responses for {len(prompts)} prompts...")
     outputs = vllm_model.generate(prompts, eval_sampling_params)
     
-    results = []
-    total_accuracy = 0.0
-    
+    counts = {'correct': 0, 'wrong_answer': 0, 'wrong_format': 0}
+    format_errors = []
+    answer_errors = []
+
     print(f"Evaluating {len(outputs)} generated responses...")
     for i, output in enumerate(outputs):
-        prompt = output.prompt
         generated_text = output.outputs[0].text
-        ground_truth = ground_truths[i]
+        ground_truth = data[i]['answer']
         
-        scores = reward_fn(ground_truth, generated_text)
-        total_accuracy += scores.get('accuracy', 0.0)
+        reward_info = reward_fn(ground_truth, generated_text)
         
-        result = {
-            'prompt': prompt,
-            'ground_truth': ground_truth,
-            'generated_text': generated_text,
-            'scores': scores
-        }
-        results.append(result)
+        if reward_info['correctness']:
+            counts['correct'] += 1
+        elif reward_info['format_is_correct']:
+            counts['wrong_answer'] += 1
+            answer_errors.append({
+                'prompt': output.prompt,
+                'generated_text': generated_text,
+                'ground_truth': ground_truth,
+                'parsed_answer': reward_info['parsed_answer'],
+                'expected_answer': reward_info['expected_answer']
+            })
+        else:
+            counts['wrong_format'] += 1
+            format_errors.append({
+                'prompt': output.prompt,
+                'generated_text': generated_text,
+                'ground_truth': ground_truth
+            })
 
-    avg_accuracy = total_accuracy / len(outputs) if outputs else 0.0
-    print(f"Average Accuracy: {avg_accuracy:.4f}")
+    return counts, format_errors, answer_errors
 
-    print(f"Saving results to {output_path}...")
-    with open(output_path, 'w') as f:
-        for result in results:
-            f.write(json.dumps(result) + '\n')
-    print("Done.")
 
+from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
 
 def main():
     """Main function to run the evaluation."""
@@ -100,21 +86,33 @@ def main():
     gsm8k_data = load_gsm8k_data(DATA_PATH)
     
     prompts = [format_prompt_r1_zero(ex['question']) for ex in gsm8k_data]
-    ground_truths = [ex['answer'] for ex in gsm8k_data]
     
     sampling_params = SamplingParams(
         temperature=0.0, # Set to 0 for deterministic output
         max_tokens=256,
     )
     
-    evaluate_vllm(
+    counts, format_errors, answer_errors = evaluate_vllm(
         vllm_model=llm,
-        reward_fn=gsm8k_reward_fn,
+        reward_fn=r1_zero_reward_fn,
+        data=gsm8k_data,
         prompts=prompts,
-        ground_truths=ground_truths,
         eval_sampling_params=sampling_params,
-        output_path=OUTPUT_PATH
     )
+
+    print("\n--- Evaluation Summary ---")
+    print(f"Correct: {counts['correct']}")
+    print(f"Wrong Answer: {counts['wrong_answer']}")
+    print(f"Wrong Format: {counts['wrong_format']}")
+
+    output_path = os.path.join(OUTPUT_DIR, 'gsm8k_eval_results.jsonl')
+    print(f"\nSaving detailed results to {output_path}...")
+    with open(output_path, 'w') as f:
+        for error in format_errors:
+            f.write(json.dumps(error) + '\n')
+        for error in answer_errors:
+            f.write(json.dumps(error) + '\n')
+    print("Done.")
 
 if __name__ == "__main__":
     main()
