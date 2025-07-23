@@ -51,7 +51,7 @@ def main(args):
     num_train_sample = args.num_train_sample
     # algo1
     model_id = '/kun-data/assignment5-alignment/models/Qwen/Qwen2.5-Math-1.5B'
-    device_train = "cuda:0"
+    device_train = "cuda:1"
     device_vllm = "cuda:0"
     output_dir = "./outputs/sft"
     if args.use_corrupted:
