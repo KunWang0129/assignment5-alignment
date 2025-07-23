@@ -82,7 +82,7 @@ def train_step(model, optimizer, amp_ctx, train_batch, n_grad_accum_steps, i_sft
         entropy = response_log_probs["entropy"]
 
         loss, _ = sft_microbatch_train_step(log_probs, train_batch["response_mask"], n_grad_accum_steps)
-        loss.backward()
+        loss.backward(retain_graph=True)
 
         if j_grad_accum_step == n_grad_accum_steps - 1:
             nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
