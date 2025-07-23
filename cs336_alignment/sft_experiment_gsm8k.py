@@ -141,7 +141,7 @@ def main(args):
 
     num_train_sample = args.num_train_sample
     model_id = '/kun-data/assignment5-alignment/models/Qwen/Qwen2.5-Math-1.5B'
-    device_train = "cuda:2"
+    device_train = "cuda:1"
     device_vllm = "cuda"
     output_dir = "./outputs/sft"
 
