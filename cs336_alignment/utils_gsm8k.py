@@ -109,3 +109,6 @@ def main():
         for error in answer_errors:
             f.write(json.dumps(error) + '\n')
     print("Done.")
+
+if __name__ == "__main__":
+    main()
