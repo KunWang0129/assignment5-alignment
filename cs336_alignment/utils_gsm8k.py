@@ -5,6 +5,7 @@ from typing import Callable, List, Dict
 
 from vllm import LLM, SamplingParams
 from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
+from cs336_alignment.vllm_helper import evaluate_vllm
 
 
 # Constants
@@ -71,12 +72,16 @@ def main():
     # It may not be able to run on the current environment
     # llm = LLM(model=MODEL_PATH)
     llm = LLM(model="Qwen/Qwen2-1.5B-Instruct")
+    TEMPLATE_PATH = "cs336_alignment/prompts/r1_zero.prompt" # for testing
 
 
     print("Loading data...")
-    gsm8k_data = load_gsm8k_data(DATA_PATH)
-    
-    prompts = [format_prompt_r1_zero(ex['question']) for ex in gsm8k_data]
+    gsm8k_data = load_jsonl(DATA_PATH)
+    validation_data = format_data(
+        data=gsm8k_data,
+        prompt_fn=lambda question: format_prompt_with_template(question, TEMPLATE_PATH),
+    )
+    prompts = [ex['prompt'] for ex in validation_data]
     
     sampling_params = SamplingParams(
         temperature=0.0, # Set to 0 for deterministic output
@@ -86,7 +91,7 @@ def main():
     counts, format_errors, answer_errors = evaluate_vllm(
         vllm_model=llm,
         reward_fn=r1_zero_reward_fn,
-        data=gsm8k_data,
+        data=validation_data,
         prompts=prompts,
         eval_sampling_params=sampling_params,
     )
