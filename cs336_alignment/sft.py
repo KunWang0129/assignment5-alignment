@@ -77,7 +77,7 @@ def main(args):
     )
     tokenizer = AutoTokenizer.from_pretrained(model_id)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
 
     amp_ctx = torch.amp.autocast(
         device_type=device_train,

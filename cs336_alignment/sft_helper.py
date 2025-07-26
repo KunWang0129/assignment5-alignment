@@ -28,49 +28,51 @@ def tokenize_prompt_and_output(
     """
     
     # Tokenize the prompts and outputs
-    prompt_tokens = tokenizer(prompt_strs)['input_ids']
-    output_tokens = tokenizer(output_strs)['input_ids']
+    prompt_input_ids = []
+    output_input_ids = []
 
-    batch_sz = len(prompt_tokens)
+    for prompt in prompt_strs:
+        tokens = tokenizer.encode(prompt, add_special_tokens=False)
+        prompt_input_ids.append(torch.tensor(tokens))
+
+    for output in output_strs:
+        tokens = tokenizer.encode(output, add_special_tokens=False)
+        output_input_ids.append(torch.tensor(tokens))
+
+    # max len
+    seq_lengths = [len(p_ids) + len(o_ids) for p_ids, o_ids in zip(prompt_input_ids, output_input_ids)]
+    max_length = max(seq_lengths)
     
-    # find padding length
-    prompt_and_output_lens = [len(p) + len(o) for p, o in zip(prompt_tokens, output_tokens)]
-    padded_len = max(prompt_and_output_lens)
+    concatenated_input_ids = []
+    concatenated_labels = []
+    response_masks = []
 
-    # Initialize tensors for return
-    input_ids = torch.empty((batch_sz, padded_len - 1), dtype=torch.long)
-    labels = torch.empty((batch_sz, padded_len - 1), dtype=torch.long)
-    response_mask = torch.zeros((batch_sz, padded_len - 1), dtype=torch.bool)
-    
-    # Build the tensors sample by sample
-    for i, (p_toks, o_toks) in enumerate(zip(prompt_tokens, output_tokens)):
-        # Concatenate prompt + output and convert to a torch tensor
-        p_o_concat = torch.tensor(p_toks + o_toks)
-        concat_len = len(p_o_concat)
+    for p_ids, o_ids in zip(prompt_input_ids, output_input_ids):
+        # concat
+        input_ids = torch.cat([p_ids, o_ids], dim=0)
+        response_mask = torch.cat([
+            torch.zeros_like(p_ids, dtype=torch.bool),  # False for prompt
+            torch.ones_like(o_ids, dtype=torch.bool)     # True for output
+        ], dim=0)
+        # and then pad
+        pad_length = max_length - input_ids.shape[0]
+        padded_input_ids = torch.nn.functional.pad(input_ids, (0, pad_length), value=tokenizer.pad_token_id)
+        padded_response_mask = torch.nn.functional.pad(response_mask, (0, pad_length), value=False)
 
-        # Pad concatentaed sequence on the right with EOS token
-        # Such that every sequence has the same length 'padded_len'
-        p_o_concat_padded = F.pad(p_o_concat, 
-                                    (0, padded_len - concat_len), 
-                                    'constant', 
-                                    tokenizer.eos_token_id)
+        concatenated_input_ids.append(padded_input_ids[:-1])
+        concatenated_labels.append(padded_input_ids[1:])
+        response_masks.append(padded_response_mask[1:])
 
-        # Fill input_ids and labels with 1-token shift (standard LM objective)
-        input_ids[i] = p_o_concat_padded[:-1] # exclude last token
-        labels[i] = p_o_concat_padded[1:] # exclude first token
+    input_ids_tensor = torch.stack(concatenated_input_ids)
+    labels_tensor = torch.stack(concatenated_labels)
+    response_mask_tensor = torch.stack(response_masks)
 
-        # Mark which *label* position corresponds to the assistant's output
-        #     Because of the 1-token shift, the first output token is at index len(prompt)-1
-        o_start = len(p_toks) - 1 # inclusive
-        o_end = concat_len - 1 # exclusive (lavels are shifted)
-        response_mask[i, o_start:o_end] = True
-
-    # Return three tensor in a dictionary
     return {
-        "input_ids": input_ids,
-        "labels": labels,
-        "response_mask": response_mask,
+        "input_ids": input_ids_tensor,
+        "labels": labels_tensor,
+        "response_mask": response_mask_tensor,
     }
+
 
 def compute_entropy(logits: torch.Tensor) -> torch.Tensor:
     """

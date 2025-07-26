@@ -1,4 +1,3 @@
-import re
 import json
 import torch
 import wandb
@@ -17,6 +16,7 @@ from cs336_alignment.sft_helper import (
     get_response_log_probs,
     sft_microbatch_train_step,
 )
+
 from utils_gsm8k import (
     load_jsonl,
     format_prompt_with_template,
@@ -29,28 +29,12 @@ from cs336_alignment.vllm_helper import (
     evaluate_vllm
 )
 
-from cs336_alignment.sft_experiment import sft
-
 SEED = 69
 torch.manual_seed(SEED)
 random.seed(SEED)
 
-ANS_RE = re.compile(r"####\s*([\-0-9\.\,]+)")
 
-
-def extract_reference_answer(answer: str) -> str:
-    match = ANS_RE.search(answer)
-    if match:
-        return match.group(1).strip().replace(",", "")
-    return "[invalid]"
-
-def get_batch(formatted_train_prompts: list[str], train_data, batch_size: int) -> list[str]:
-    batch_indices = random.sample(
-        range(len(formatted_train_prompts)), batch_size
-    )
-    return [formatted_train_prompts[i] for i in batch_indices], [train_data[i] for i in batch_indices]
-
-def get_sft_batch(
+def get_batch(
     tokenized_train_data: dict[str, torch.Tensor], batch_size: int, device: str
 ) -> dict[str, torch.Tensor]:
     batch_indices = random.sample(
@@ -64,167 +48,186 @@ def to_float(val):
     return float(val)
 
 def main(args):
-    global_step = 0
-
-    EI_num_G = args.EI_num_G
-    EI_batch_size = args.EI_batch_size
-
+    num_train_sample = args.num_train_sample
+    # algo1
     model_id = '/kun-data/assignment5-alignment/models/Qwen/Qwen2.5-Math-1.5B'
-    device_vllm = "cuda:1"
-    device_SFT = "cuda:0"
+    device_train = "cuda:1"
+    device_vllm = "cuda:0"
+    output_dir = "./outputs/sft"
+    if args.use_corrupted:
+        train_file_path = "./data/gsm8k/processed_train_corrupted.jsonl"
+    else:
+        train_file_path = "./data/gsm8k/processed_train.jsonl"
+    
     train_file_path = "./data/gsm8k/train.jsonl"
     test_file_path = "./data/gsm8k/test.jsonl"
-    TEMPLATE_PATH = "cs336_alignment/prompts/r1_zero.prompt" # for train & test
+    TEMPLATE_PATH = "cs336_alignment/prompts/r1_zero.prompt" # for testing
+    micro_batch_size = 2
 
-    n_expert_iteration_steps = 5
-    sampling_temperature = 1.0
-    sampling_max_tokens = 1024
-    sampling_min_tokens = 4
+    n_sft_steps = 64
+    n_grad_accum_steps = 32
+    eval_steps = 8
 
-    # init policy model
-    EI_vllm = init_vllm(model_id, device_vllm, seed=SEED, gpu_memory_utilization=0.9)
-
+    # input initial policy model
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
         torch_dtype=torch.bfloat16,
         attn_implementation="flash_attention_2",
-        device_map=device_SFT,
+        device_map=device_train,
     )
     tokenizer = AutoTokenizer.from_pretrained(model_id)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
 
-    # init reward function: r1...
-    # init task question D (load questions)
+    amp_ctx = torch.amp.autocast(
+        device_type=device_train,
+        dtype=torch.bfloat16,
+    )
+    
+    # model = torch.compile(model)
+
+    vllm = init_vllm(model_id, device_vllm, seed=SEED, gpu_memory_utilization=0.9)
+    # initial sft dataset D
     train_data = load_jsonl(train_file_path)
+    if num_train_sample is not None:
+        train_data = train_data[:num_train_sample]
     test_data = load_jsonl(test_file_path)
+    
+    train_data = format_data(
+        data=train_data,
+        prompt_fn=lambda question: format_prompt_with_template(question, TEMPLATE_PATH),
+    )
 
-    formatted_train_prompts = [
-        format_prompt_with_template(example["question"], TEMPLATE_PATH) for example in train_data
-    ]
+    tokenized_train_data = tokenize_prompt_and_output(
+        [data["prompt"] for data in train_data],
+        [data["response"] for data in train_data],
+        tokenizer
+    )
+    # for k, v in tokenized_train_data.items():
+    #     print(v.dtype)
     formatted_test_prompts = [
         format_prompt_with_template(example["question"], TEMPLATE_PATH) for example in test_data
     ]
 
-    # for step in 1 ... n_expert_iteration_steps
-    # sample batch question Db
-    
-    for idx in range(n_expert_iteration_steps):
-        ei_step = idx + 1
-        print(f"Starting Expert Iteration {ei_step}")
-        # old policy model <- policy model
-        # sample G outputs with (old policy model, Db)
-        formatted_train_prompts_batch, train_data_batch = get_batch(formatted_train_prompts, train_data, EI_batch_size)
+    # policy model <- policy model
+    # for step = 1 ... n_sft_steps
+    # sample a batch of QA pairs Db from D
+    train_batch = get_batch(tokenized_train_data, micro_batch_size, device_train)
+    # cross entropy <- policy model
+    input_ids = train_batch["input_ids"].to(device_train)
+    labels = train_batch["labels"].to(device_train)
+    response_mask = train_batch["response_mask"].to(device_train)
 
-        sampling_params = SamplingParams(
-            temperature=sampling_temperature,
-            top_p=1.0,
-            max_tokens=sampling_max_tokens,
-            min_tokens=sampling_min_tokens,
-            stop=["</answer>"],
-            include_stop_str_in_output=True,
-            n=EI_num_G,
-            seed=SEED,
+    for i_sft_step in range(n_sft_steps):
+        for j_grad_accum_step in range(n_grad_accum_steps):
+            with amp_ctx:
+                # should use micro step...
+                response_log_probs = get_response_log_probs(model, input_ids, labels, return_token_entropy=True)
+                log_probs = response_log_probs["log_probs"]
+                entropy = response_log_probs["entropy"]
+
+                next_batch = get_batch(tokenized_train_data, micro_batch_size, device_train)
+
+                # update parameters (gradient step, cross enotropy)
+                loss, _ = sft_microbatch_train_step(log_probs, response_mask, n_grad_accum_steps)
+
+                if j_grad_accum_step == n_grad_accum_steps - 1:
+                    # i think we need to do something here
+                    nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+                    optimizer.step()
+
+                    optimizer.zero_grad()
+                    # log train generation
+                    print(f"\n📊 Training Summary at Step {i_sft_step + 1}:")
+                    print(f"Loss: {loss:.6f}")
+                    print(f"Entropy: {entropy.mean().item():.6f}")
+                    wandb.log({
+                        "train/loss": to_float(loss),
+                        "train/entropy": to_float(entropy.mean()),
+                        "train_step": i_sft_step + 1,
+                    })
+            train_batch = next_batch
+            input_ids = train_batch["input_ids"].to(device_train)
+            labels = train_batch["labels"].to(device_train)
+            response_mask = train_batch["response_mask"].to(device_train)
+
+        if (i_sft_step + 1) % eval_steps == 0 or i_sft_step == 0:
+            # use vllm to eval 0.0
+            load_policy_into_vllm_instance(model, vllm)
+
+            sampling_params =  SamplingParams(
+                temperature=1.0, top_p=1.0, max_tokens=1024, stop=["</answer>"], include_stop_str_in_output=True
+            )
+            counts, format_errors, answer_errors = evaluate_vllm(
+                vllm_model=vllm,
+                reward_fn=r1_zero_reward_fn,
+                data=test_data,
+                prompts=formatted_test_prompts,
+                eval_sampling_params=sampling_params
+            )
+
+            # log eval generation
+            accuracy = counts['correct'] / len(formatted_test_prompts)
+            print(f"\n📊 Evaluation Summary at Step {i_sft_step + 1}:")
+            print(f"Correct (format + answer): {counts['correct']}")
+            print(f"Wrong answer (but correct format): {counts['wrong_answer']}")
+            print(f"Wrong format: {counts['wrong_format']}")
+            print(f"Accuracy: {accuracy}")
+            wandb.log({
+                "eval/correct": counts["correct"],
+                "eval/wrong_answer": counts["wrong_answer"],
+                "eval/wrong_format": counts["wrong_format"],
+                "eval/accuracy": accuracy,
+                "eval_step": i_sft_step + 1,
+            })
+
+            model.save_pretrained(save_directory=output_dir)
+            tokenizer.save_pretrained(save_directory=output_dir)
+
+    if n_sft_steps % eval_steps != 0:
+        # one last time
+        load_policy_into_vllm_instance(model, vllm)
+
+        sampling_params =  SamplingParams(
+            temperature=1.0, top_p=1.0, max_tokens=1024, stop=["</answer>"], include_stop_str_in_output=True
+        )
+        counts, format_errors, answer_errors = evaluate_vllm(
+            vllm_model=vllm,
+            reward_fn=r1_zero_reward_fn,
+            data=test_data,
+            prompts=formatted_test_prompts,
+            eval_sampling_params=sampling_params
         )
 
-        outputs = EI_vllm.generate(formatted_train_prompts_batch, sampling_params)
-        all_generated_texts = [
-            [o.text.strip() for o in output.outputs]
-            for output in outputs
-        ]
-        # compute rewards for each output (reward function)
-        results_per_rollout = []
-        format_error_examples = []
-        answer_error_examples = []
-        
-        for prompt_idx, (prompt, generated_answers, example) in enumerate(zip(formatted_train_prompts_batch, all_generated_texts, train_data_batch)):
-            ground_truth = example["answer"]
-            reference_answer = extract_reference_answer(ground_truth)
+        # log eval generation
+        accuracy = counts['correct'] / len(formatted_test_prompts)
+        print(f"\n📊 Evaluation Summary at Step {n_sft_steps}:")
+        print(f"Correct (format + answer): {counts['correct']}")
+        print(f"Wrong answer (but correct format): {counts['wrong_answer']}")
+        print(f"Wrong format: {counts['wrong_format']}")
+        print(f"Accuracy: {accuracy}")
+        wandb.log({
+            "eval/correct": counts["correct"],
+            "eval/wrong_answer": counts["wrong_answer"],
+            "eval/wrong_format": counts["wrong_format"],
+            "eval/accuracy": accuracy,
+            "eval_step": n_sft_steps,
+        })
 
-            for rollout_idx, generated_text in enumerate(generated_answers):
-                metrics = r1_zero_reward_fn(generated_text, reference_answer)
-                is_correct = metrics["reward"] == 1.0
-                is_format_wrong = metrics["format_reward"] == 0.0
-                is_answer_wrong = metrics["answer_reward"] == 0.0 and metrics["format_reward"] == 1.0
-
-                results_per_rollout.append({
-                    "prompt_idx": prompt_idx,
-                    "rollout_idx": rollout_idx,
-                    "metrics": metrics,
-                    "prompt": prompt,
-                    "response": generated_text,
-                    "is_correct": is_correct
-                })
-
-                if is_format_wrong:
-                    format_error_examples.append({
-                        "prompt": prompt,
-                        "response": generated_text,
-                        "expected": reference_answer
-                    })
-                elif is_answer_wrong:
-                    answer_error_examples.append({
-                        "prompt": prompt,
-                        "response": generated_text,
-                        "expected": reference_answer
-                    })
-
-        # Print some examples of format and answer errors
-        print("\n=== Format Error Examples ===")
-        for i, ex in enumerate(format_error_examples[:1]):
-            print(f"{i+1}. Prompt: {ex['prompt']}")
-            print(f"   Response: {ex['response']}")
-            print(f"   Expected Answer: {ex['expected']}\n")
-
-        print("\n=== Answer Error Examples ===")
-        for i, ex in enumerate(answer_error_examples[:1]):
-            print(f"{i+1}. Prompt: {ex['prompt']}")
-            print(f"   Response: {ex['response']}")
-            print(f"   Expected Answer: {ex['expected']}\n")
-            
-        # ✅ Sanity Check: Print how many total responses and how many are correct
-        total_responses = len(results_per_rollout)
-        correct_responses = sum(1 for item in results_per_rollout if item["is_correct"])
-        print(f"\nSanity Check in the end of Expert Iteration Step {idx + 1}:")
-        print(f"Total generated responses: {total_responses}")
-        print(f"Correct responses: {correct_responses}")
-        print(f"Accuracy so far: {correct_responses / total_responses * 100:.2f}%\n")
-        # filter out wrong output -> Dsft
-        sft_data = []
-        for item in results_per_rollout:
-            if item["is_correct"]:
-                sft_data.append({
-                    "prompt": item["prompt"],
-                    "response": item["response"]
-                })
-        # print(sft_data)
-        # policy model <- SFT(policy model, Dsft)
-        model, global_step = sft(
-            args,
-            sft_data,
-            model,
-            tokenizer,
-            optimizer,
-            EI_vllm,
-            test_data,
-            formatted_test_prompts,
-            device_sft=device_SFT,
-            global_step=global_step,
-        )
-        load_policy_into_vllm_instance(model, EI_vllm)
+        model.save_pretrained(save_directory=output_dir)
+        tokenizer.save_pretrained(save_directory=output_dir)
 
 
 if __name__ == "__main__":
     parser = ArgumentParser()
-    parser.add_argument("--EI_num_G", type=int, default=5)
-    parser.add_argument("--SFT_num_epochs", type=int, default=1)
-    # n_expert_iteration = 5
-    parser.add_argument("--EI_batch_size", type=int, default=512)
+    parser.add_argument("--num_train_sample", type=int, default=None)
+    parser.add_argument("--use_corrupted", action='store_true')
     args = parser.parse_args()
 
     wandb.init(
         entity="kunwang03",
-        project="expert_iteration",
+        project="sft_experiment",
         config=args,
     )
 
