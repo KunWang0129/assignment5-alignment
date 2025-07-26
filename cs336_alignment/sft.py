@@ -6,7 +6,6 @@ import torch.nn as nn
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from vllm import LLM, SamplingParams
 from vllm.model_executor import set_random_seed as vllm_set_random_seed
-from unittest.mock import patch
 from argparse import ArgumentParser
 
 from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
