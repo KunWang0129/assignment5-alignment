@@ -17,7 +17,7 @@ from cs336_alignment.sft_helper import (
     sft_microbatch_train_step,
 )
 
-from utils_gsm8k import (
+from cs336_alignment.utils_gsm8k import (
     load_jsonl,
     format_prompt_with_template,
     format_data,
@@ -47,148 +47,76 @@ def to_float(val):
         return val.float().item()
     return float(val)
 
-def preprocess_data(train_data,
-                    TEMPLATE_PATH,
-                    tokenizer,):
-    train_data = format_data(
-        data=train_data,
-        prompt_fn=lambda question: format_prompt_with_template(question, TEMPLATE_PATH),
-    )
-
-    tokenized_train_data = tokenize_prompt_and_output(
-        [data["prompt"] for data in train_data],
-        [data["response"] for data in train_data],
-        tokenizer
-    )
-    # for k, v in tokenized_train_data.items():
-    #     print(v.dtype)
-    formatted_test_prompts = [
-        format_prompt_with_template(example["question"], TEMPLATE_PATH) for example in test_data
-    ]
-
-    return train_data, tokenized_train_data, formatted_test_prompts
-
-def sft_train_step(amp_ctx,
-                   model,
-                   optimizer,
-                   tokenized_train_data,
-                   micro_batch_size,
-                   n_grad_accum_steps,
-                   i_sft_step,
-                   j_grad_accum_step,
-                   device_train):
-    with amp_ctx:
-        # should use micro step...
-        response_log_probs = get_response_log_probs(model, input_ids, labels, return_token_entropy=True)
-        log_probs = response_log_probs["log_probs"]
-        entropy = response_log_probs["entropy"]
-
-        next_batch = get_batch(tokenized_train_data, micro_batch_size, device_train)
-
-        # update parameters (gradient step, cross enotropy)
-        loss, _ = sft_microbatch_train_step(log_probs, response_mask, n_grad_accum_steps)
-
-        if j_grad_accum_step == n_grad_accum_steps - 1:
-            # i think we need to do something here
-            nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-
-            optimizer.step()
-
-            optimizer.zero_grad()
-            # log train generation
-            print(f"\n📊 Training Summary at Step {i_sft_step + 1}:")
-            print(f"Loss: {loss:.6f}")
-            print(f"Entropy: {entropy.mean().item():.6f}")
-            wandb.log({
-                "train/loss": to_float(loss),
-                "train/entropy": to_float(entropy.mean()),
-                "train_step": i_sft_step + 1,
-            })
-    train_batch = next_batch
-    input_ids = train_batch["input_ids"].to(device_train)
-    labels = train_batch["labels"].to(device_train)
-    response_mask = train_batch["response_mask"].to(device_train)
-    return train_batch, input_ids, labels, response_mask
-
-
-
-def main(args):
-    num_train_sample = args.num_train_sample
-    # algo1
-    model_id = '/kun-data/assignment5-alignment/models/Qwen/Qwen2.5-Math-1.5B'
-    device_train = "cuda:1"
-    device_vllm = "cuda:0"
-    output_dir = "./outputs/sft"
-    if args.use_corrupted:
-        train_file_path = "./data/gsm8k/processed_train_corrupted.jsonl"
-    else:
-        train_file_path = "./data/gsm8k/processed_train.jsonl"
-    
-    train_file_path = "./data/gsm8k/train.jsonl"
-    test_file_path = "./data/gsm8k/test.jsonl"
-    TEMPLATE_PATH = "cs336_alignment/prompts/r1_zero.prompt" # for testing
-    micro_batch_size = 2
-
-    n_sft_steps = 64
-    n_grad_accum_steps = 32
-    eval_steps = 8
-
-    # input initial policy model
-    model = AutoModelForCausalLM.from_pretrained(
-        model_id,
-        torch_dtype=torch.bfloat16,
-        attn_implementation="flash_attention_2",
-        device_map=device_train,
-    )
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
-
-    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5)
+def sft(
+    args,
+    sft_data,
+    model,
+    tokenizer,
+    optimizer,
+    vllm,
+    test_data,
+    formatted_test_prompts,
+    device_sft,
+    n_grad_accum_steps,
+    micro_batch_size,
+    eval_steps,
+    output_dir,
+    global_step: int = 0,
+):
+    sft_num_epochs = args.SFT_num_epochs
 
     amp_ctx = torch.amp.autocast(
-        device_type=device_train,
+        device_type=device_sft,
         dtype=torch.bfloat16,
     )
-    
-    # model = torch.compile(model)
 
-    vllm = init_vllm(model_id, device_vllm, seed=SEED, gpu_memory_utilization=0.9)
-    # initial sft dataset D
-    train_data = load_jsonl(train_file_path)
-    if num_train_sample is not None:
-        train_data = train_data[:num_train_sample]
-    test_data = load_jsonl(test_file_path)
-
-    train_data, tokenized_train_data, formatted_test_prompts = preprocess_data(
-        train_data=train_data,
-        TEMPLATE_PATH=TEMPLATE_PATH,
-        tokenizer=tokenizer,
+    tokenized_sft_data = tokenize_prompt_and_output(
+        [data["prompt"] for data in sft_data],
+        [data["response"] for data in sft_data],
+        tokenizer
     )
-
-    # policy model <- policy model
-    # for step = 1 ... n_sft_steps
-    # sample a batch of QA pairs Db from D
-    train_batch = get_batch(tokenized_train_data, micro_batch_size, device_train)
-    # cross entropy <- policy model
-    input_ids = train_batch["input_ids"].to(device_train)
-    labels = train_batch["labels"].to(device_train)
-    response_mask = train_batch["response_mask"].to(device_train)
+    
+    n_sft_steps = len(sft_data) * sft_num_epochs // (n_grad_accum_steps * micro_batch_size)
+    print(f"n_sft_steps{n_sft_steps} = len(sft_data){len(sft_data)} * SFT_num_epochs{sft_num_epochs} // (n_grad_accum_steps{n_grad_accum_steps} * micro_batch_size{micro_batch_size})")
+    train_batch = get_batch(tokenized_sft_data, micro_batch_size, device_sft)
+    input_ids = train_batch["input_ids"].to(device_sft)
+    labels = train_batch["labels"].to(device_sft)
+    response_mask = train_batch["response_mask"].to(device_sft)
 
     for i_sft_step in range(n_sft_steps):
         for j_grad_accum_step in range(n_grad_accum_steps):
-            train_batch, input_ids, labels, response_mask = sft_train_step(
-                amp_ctx,
-                model,
-                optimizer,
-                tokenized_train_data,
-                micro_batch_size,
-                n_grad_accum_steps,
-                i_sft_step,
-                j_grad_accum_step,
-                device_train
-            )
+            with amp_ctx:
+                response_log_probs = get_response_log_probs(model, input_ids, labels, return_token_entropy=True)
+                log_probs = response_log_probs["log_probs"]
+                entropy = response_log_probs["token_entropy"]
+
+                next_batch = get_batch(tokenized_sft_data, micro_batch_size, device_sft)
+
+                loss, _ = sft_microbatch_train_step(log_probs, response_mask, n_grad_accum_steps)
+                loss.backward()
+
+                if j_grad_accum_step == n_grad_accum_steps - 1:
+                    nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+                    optimizer.step()
+
+                    optimizer.zero_grad()
+                    global_step += 1
+                    print(f"\n📊 Training Summary at Step {global_step}:")
+                    print(f"Loss: {loss:.6f}")
+                    print(f"Entropy: {entropy.mean().item():.6f}")
+                    wandb.log({
+                        "train/loss": to_float(loss),
+                        "train/entropy": to_float(entropy.mean()),
+                        "train_step": global_step,
+                    })
+
+            train_batch = next_batch
+            input_ids = train_batch["input_ids"].to(device_sft)
+            labels = train_batch["labels"].to(device_sft)
+            response_mask = train_batch["response_mask"].to(device_sft)
 
         if (i_sft_step + 1) % eval_steps == 0 or i_sft_step == 0:
-            # use vllm to eval 0.0
             load_policy_into_vllm_instance(model, vllm)
 
             sampling_params =  SamplingParams(
@@ -202,9 +130,8 @@ def main(args):
                 eval_sampling_params=sampling_params
             )
 
-            # log eval generation
             accuracy = counts['correct'] / len(formatted_test_prompts)
-            print(f"\n📊 Evaluation Summary at Step {i_sft_step + 1}:")
+            print(f"\n📊 Evaluation Summary at Step {global_step}:")
             print(f"Correct (format + answer): {counts['correct']}")
             print(f"Wrong answer (but correct format): {counts['wrong_answer']}")
             print(f"Wrong format: {counts['wrong_format']}")
@@ -214,14 +141,12 @@ def main(args):
                 "eval/wrong_answer": counts["wrong_answer"],
                 "eval/wrong_format": counts["wrong_format"],
                 "eval/accuracy": accuracy,
-                "eval_step": i_sft_step + 1,
+                "eval_step": global_step,
             })
-
             model.save_pretrained(save_directory=output_dir)
             tokenizer.save_pretrained(save_directory=output_dir)
-
+            
     if n_sft_steps % eval_steps != 0:
-        # one last time
         load_policy_into_vllm_instance(model, vllm)
 
         sampling_params =  SamplingParams(
@@ -235,9 +160,8 @@ def main(args):
             eval_sampling_params=sampling_params
         )
 
-        # log eval generation
         accuracy = counts['correct'] / len(formatted_test_prompts)
-        print(f"\n📊 Evaluation Summary at Step {n_sft_steps}:")
+        print(f"\n📊 Evaluation Summary at Step {global_step}:")
         print(f"Correct (format + answer): {counts['correct']}")
         print(f"Wrong answer (but correct format): {counts['wrong_answer']}")
         print(f"Wrong format: {counts['wrong_format']}")
@@ -247,17 +171,79 @@ def main(args):
             "eval/wrong_answer": counts["wrong_answer"],
             "eval/wrong_format": counts["wrong_format"],
             "eval/accuracy": accuracy,
-            "eval_step": n_sft_steps,
+            "eval_step": global_step,
         })
-
         model.save_pretrained(save_directory=output_dir)
         tokenizer.save_pretrained(save_directory=output_dir)
+    
+    return model, global_step
+
+def main(args):
+    num_train_sample = args.num_train_sample
+    model_id = '/kun-data/assignment5-alignment/models/Qwen/Qwen2.5-Math-1.5B'
+    device_train = "cuda:1"
+    device_vllm = "cuda:0"
+    output_dir = "./outputs/sft"
+    if args.use_corrupted:
+        train_file_path = "./data/gsm8k/processed_train_corrupted.jsonl"
+    else:
+        train_file_path = "./data/gsm8k/processed_train.jsonl"
+    
+    train_file_path = "./data/gsm8k/train.jsonl"
+    test_file_path = "./data/gsm8k/test.jsonl"
+    TEMPLATE_PATH = "cs336_alignment/prompts/r1_zero.prompt"
+    micro_batch_size = 2
+
+    n_grad_accum_steps = 32
+    eval_steps = 8
+
+    model = AutoModelForCausalLM.from_pretrained(
+        model_id,
+        torch_dtype=torch.bfloat16,
+        attn_implementation="flash_attention_2",
+        device_map=device_train,
+    )
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+
+    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5)
+
+    vllm = init_vllm(model_id, device_vllm, seed=SEED, gpu_memory_utilization=0.9)
+    train_data = load_jsonl(train_file_path)
+    if num_train_sample is not None:
+        train_data = train_data[:num_train_sample]
+    test_data = load_jsonl(test_file_path)
+    
+    train_data = format_data(
+        data=train_data,
+        prompt_fn=lambda question: format_prompt_with_template(question, TEMPLATE_PATH),
+    )
+
+    formatted_test_prompts = [
+        format_prompt_with_template(example["question"], TEMPLATE_PATH) for example in test_data
+    ]
+
+    model, _ = sft(
+        args=args,
+        sft_data=train_data,
+        model=model,
+        tokenizer=tokenizer,
+        optimizer=optimizer,
+        vllm=vllm,
+        test_data=test_data,
+        formatted_test_prompts=formatted_test_prompts,
+        device_sft=device_train,
+        n_grad_accum_steps=n_grad_accum_steps,
+        micro_batch_size=micro_batch_size,
+        eval_steps=eval_steps,
+        output_dir=output_dir,
+    )
 
 
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--num_train_sample", type=int, default=None)
     parser.add_argument("--use_corrupted", action='store_true')
+    parser.add_argument("--SFT_num_epochs", type=int, default=1)
     args = parser.parse_args()
 
     wandb.init(

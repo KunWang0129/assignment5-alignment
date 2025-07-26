@@ -91,7 +91,7 @@ def main():
     counts, format_errors, answer_errors = evaluate_vllm(
         vllm_model=llm,
         reward_fn=r1_zero_reward_fn,
-        data=validation_data,
+        data=gsm8k_data,
         prompts=prompts,
         eval_sampling_params=sampling_params,
     )
