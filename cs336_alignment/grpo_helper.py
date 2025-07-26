@@ -117,3 +117,46 @@ def compute_grpo_clip_loss(
     }
 
     return loss, metadata
+
+def compute_policy_gradient_loss(
+    policy_log_probs: torch.Tensor,
+    loss_type: Literal["no_baseline", "reinforce_with_baseline", "grpo_clip"],
+    raw_rewards: torch.Tensor | None = None,
+    advantages: torch.Tensor | None = None,
+    old_log_probs: torch.Tensor | None = None,
+    cliprange: float | None = None,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """
+    Compute the policy gradient loss based on the specified loss type.
+    Args:
+        - policy_log_probs (batch_size, sequence_length), per-token log-probabilities from the
+        policy being trained.
+        - loss_type One of "no_baseline", "reinforce_with_baseline", or "grpo_clip".
+        raw_rewards Required if loss_type == "no_baseline"; shape (batch_size, 1).
+        - advantages Required for "reinforce_with_baseline" and "grpo_clip"; shape
+        (batch_size, 1).
+        - old_log_probs Required for "grpo_clip"; shape (batch_size, sequence_length).
+        - cliprange Required for "grpo_clip"; scalar ε used for clipping.
+    """
+
+    if loss_type == "no_baseline":
+        if raw_rewards is None:
+            raise ValueError("raw_rewards must be provided for 'no_baseline' loss type.")
+        loss = compute_naive_policy_gradient_loss(raw_rewards, policy_log_probs)
+        metadata = {}
+    
+    elif loss_type == "reinforce_with_baseline":
+        if advantages is None:
+            raise ValueError("advantages must be provided for 'reinforce_with_baseline' loss type.")
+        loss = compute_naive_policy_gradient_loss(advantages, policy_log_probs)
+        metadata = {}
+    
+    elif loss_type == "grpo_clip":
+        if advantages is None or old_log_probs is None or cliprange is None:
+            raise ValueError("advantages, old_log_probs, and cliprange must be provided for 'grpo_clip' loss type.")
+        loss, metadata = compute_grpo_clip_loss(advantages, policy_log_probs, old_log_probs, cliprange)
+    
+    else:
+        raise ValueError(f"Unknown loss_type: {loss_type}")
+    return loss, metadata
+
