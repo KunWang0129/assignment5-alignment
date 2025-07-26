@@ -132,7 +132,7 @@ def get_response_log_probs(
 
     if return_token_entropy:
         # Compute the entropy of the logits
-        result["entropy"] = compute_entropy(logits)
+        result["token_entropy"] = compute_entropy(logits)
     
     return result
     

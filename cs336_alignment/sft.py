@@ -123,7 +123,7 @@ def main(args):
                 # should use micro step...
                 response_log_probs = get_response_log_probs(model, input_ids, labels, return_token_entropy=True)
                 log_probs = response_log_probs["log_probs"]
-                entropy = response_log_probs["entropy"]
+                entropy = response_log_probs["token_entropy"]
 
                 next_batch = get_batch(tokenized_train_data, micro_batch_size, device_train)
 
