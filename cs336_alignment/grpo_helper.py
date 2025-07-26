@@ -22,6 +22,8 @@ def compute_group_normalized_rewards(
     rewards_per_group = raw_rewards.reshape((-1, group_size))
     mean_reward = torch.mean(rewards_per_group, dim=1, keepdim=True)
 
+    advantage = rewards_per_group - mean_reward
+
     if normalize_by_std:
         std_reward = torch.std(rewards_per_group, dim=-1, keepdim=True)
         advandage /= (std_reward + advantage_eps)
