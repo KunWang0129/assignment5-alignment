@@ -160,3 +160,59 @@ def compute_policy_gradient_loss(
         raise ValueError(f"Unknown loss_type: {loss_type}")
     return loss, metadata
 
+def masked_mean(
+    tensor: torch.Tensor,
+    mask: torch.Tensor,
+    dim: int | None = None,
+    ) -> torch.Tensor:
+    """
+    Compute the mean of a tensor along a specified dimension, respecting a boolean mask.
+    Args:
+        - tensor: torch.Tensor The data to be averaged.
+        - mask: torch.Tensor Same shape as tensor; positions with 1 are included in the mean.
+        - dim: int | None Dimension over which to average. If None, compute the mean over all
+        masked elements.
+    Returns:
+        torch.Tensor The masked mean; shape matches tensor.mean(dim) semantics.
+    """
+
+    masked_tensor = tensor * mask
+
+    return torch.sum(masked_tensor, dim=dim) / torch.sum(mask, dim=dim)
+
+def grpo_microbatch_train_step(
+    policy_log_probs: torch.Tensor,
+    response_mask: torch.Tensor,
+    gradient_accumulation_steps: int,
+    loss_type: Literal["no_baseline", "reinforce_with_baseline", "grpo_clip"],
+    raw_rewards: torch.Tensor | None= None,
+    advantages: torch.Tensor | None= None,
+    old_log_probs: torch.Tensor | None= None,
+    cliprange: float | None= None,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """
+    Perform a single training step on a microbatch of data for GRPO.
+    Args:
+        - tensor: torch.Tensor The data to be averaged.
+        - mask: torch.Tensor Same shape as tensor; positions with 1 are included in the mean.
+        - dim: int | None Dimension over which to average. If None, compute the mean over all
+        masked elements.
+    Returns:
+        - torch.Tensor The masked mean; shape matches tensor.mean(dim) semantics.
+    """
+    # Compute the loss
+    logs, metadata = compute_policy_gradient_loss(
+        policy_log_probs=policy_log_probs,
+        loss_type=loss_type,
+        raw_rewards=raw_rewards,
+        advantages=advantages,
+        old_log_probs=old_log_probs,
+        cliprange=cliprange,
+    )
+
+    loss = masked_mean(logs, response_mask)
+    loss /= gradient_accumulation_steps
+
+    loss.backward()
+
+    return loss, metadata
