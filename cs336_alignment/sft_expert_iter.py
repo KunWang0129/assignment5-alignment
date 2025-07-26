@@ -29,7 +29,7 @@ from cs336_alignment.vllm_helper import (
     evaluate_vllm
 )
 
-from cs336_alignment.sft_experiment import SFT
+from cs336_alignment.sft_experiment import sft
 
 SEED = 69
 torch.manual_seed(SEED)
@@ -199,7 +199,7 @@ def main(args):
                 })
         # print(sft_data)
         # policy model <- SFT(policy model, Dsft)
-        model, global_step = SFT(
+        model, global_step = sft(
             args,
             sft_data,
             model,
@@ -208,7 +208,7 @@ def main(args):
             EI_vllm,
             test_data,
             formatted_test_prompts,
-            device_SFT=device_SFT,
+            device_sft=device_SFT,
             global_step=global_step,
         )
         load_policy_into_vllm_instance(model, EI_vllm)
@@ -223,7 +223,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     wandb.init(
-        entity="koala34025-national-tsing-hua-university",
+        entity="kunwang03",
         project="expert_iteration",
         config=args,
     )

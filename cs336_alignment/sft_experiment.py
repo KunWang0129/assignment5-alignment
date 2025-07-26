@@ -57,10 +57,10 @@ def sft(
     test_data,
     formatted_test_prompts,
     device_sft,
-    n_grad_accum_steps,
-    micro_batch_size,
-    eval_steps,
-    output_dir,
+    n_grad_accum_steps = 8,
+    micro_batch_size = 2,
+    eval_steps = 10,
+    output_dir = "./outputs/sft",
     global_step: int = 0,
 ):
     sft_num_epochs = args.SFT_num_epochs
