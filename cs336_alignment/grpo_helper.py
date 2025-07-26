@@ -9,7 +9,7 @@ def compute_group_normalized_rewards(
     advantage_eps,
     normalize_by_std,
     ):
-    
+
     """
     Compute group normalized rewards for a set of rollout responses against ground truth responses.
     Args:
@@ -54,3 +54,18 @@ def compute_group_normalized_rewards(
     }
 
     return advantage, raw_rewards, metadata
+
+def compute_naive_policy_gradient_loss(
+    raw_rewards_or_advantages: torch.Tensor,
+    policy_log_probs: torch.Tensor,
+    ) -> torch.Tensor:
+    """
+    Compute the policy gradient loss using raw rewards or advantages.
+    Args:
+        raw_rewards_or_advantages: torch.Tensor The raw rewards or advantages for each response.
+        policy_log_probs: torch.Tensor The log probabilities of the policy for each response.
+    Returns:
+        torch.Tensor: The computed policy gradient loss.
+    """
+
+    return -raw_rewards_or_advantages * policy_log_probs
