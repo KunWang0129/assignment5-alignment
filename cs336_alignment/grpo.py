@@ -48,7 +48,7 @@ def sample_dataset(dataset, num_samples):
 
     for d in sampled_data:
         ret['prompts'].append(d['prompt'])
-        ret['answers'].append(d['answer'])
+        ret['answers'].append(d['response'])
 
     return ret
 
@@ -113,9 +113,10 @@ def main(args):
         min_tokens=sampling_min_tokens,
         max_tokens=sampling_max_tokens,
         logprobs=0,
-        stop=["</answer>"],
-        include_prompt_in_output=True,
     )
+
+    sampling_params.stop = ["</answer>"]
+    sampling_params.include_stop_str_in_output = True
 
     optimizer = torch.optim.AdamW(
         policy.parameters(),
@@ -218,8 +219,8 @@ def main(args):
             })
 
             rollout_data_tokenized = tokenize_prompt_and_output(
-                prompts=rollout_input_text,
-                responses=rollout_response_text,
+                prompt_strs=rollout_input_text,
+                output_strs=rollout_response_text,
                 tokenizer=tokenizer,
             )
 
@@ -242,10 +243,10 @@ def main(args):
                     microbatch_raw_rewards = raw_rewards[microbatch_slice].to(device)
 
                     policy_log_probs_dict = get_response_log_probs(
-                        policy=policy,
+                        model=policy,
                         input_ids=microbatch_input_ids,
                         labels=microbatch_labels,
-                        return_log_probs=True,    
+                        return_token_entropy=True,
                     )
 
                     policy_log_probs = policy_log_probs_dict['log_probs']
