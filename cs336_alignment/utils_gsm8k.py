@@ -30,32 +30,6 @@ def format_prompt_with_template(question: str, template_path: str) -> str:
         template = f.read()
     return template.format(question=question)
 
-def get_gsm8k_answer(answer_str: str) -> str:
-    """Extracts the final numerical answer from the gsm8k answer string."""
-    return answer_str.split('####')[-1].strip()
-
-def format_data(
-    data: List[Dict[str, str]],
-    prompt_fn: Callable[[str], str],
-) -> List[Dict[str, str]]:
-    """
-    Formats the data using the provided prompt function.
-    
-    Args:
-        data: A list of dictionaries, each with 'question' and 'answer' keys.
-        prompt_fn: A function that takes a question string and returns a formatted prompt string.
-        
-    Returns:
-        A list of dictionaries, each with 'prompt' and 'response' keys.
-    """
-    formatted_data = []
-    for ex in data:
-        formatted_data.append({
-            'prompt': prompt_fn(ex['question']),
-            'response': ex['answer'],
-        })
-    return formatted_data
-
 def format_for_training(file_path: str):
     data = load_jsonl(file_path)
     formatted_data = []
@@ -76,16 +50,14 @@ def main():
     print("Loading model...")
     # It may not be able to run on the current environment
     # llm = LLM(model=MODEL_PATH)
+
     llm = LLM(model="Qwen/Qwen2-1.5B-Instruct")
     TEMPLATE_PATH = "cs336_alignment/prompts/r1_zero.prompt" # for testing
 
 
     print("Loading data...")
     gsm8k_data = load_jsonl(DATA_PATH)
-    validation_data = format_data(
-        data=gsm8k_data,
-        prompt_fn=lambda question: format_prompt_with_template(question, TEMPLATE_PATH),
-    )
+    validation_data = format_for_training(DATA_PATH)
     prompts = [ex['prompt'] for ex in validation_data]
     
     sampling_params = SamplingParams(
