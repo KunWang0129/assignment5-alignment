@@ -105,16 +105,16 @@ def evaluate_vllm(
             answer_error_examples.append({
                 "prompt": prompt,
                 "response": generated_text,
-                "reference_answer": ground_truth,
-                "reference_answer_extracted": reference_answer
+                "answer_extracted": reference_answer,
+                "ground_truth": ground_truth,
             })
         else:
             counts["wrong_format"] += 1
             format_error_examples.append({
                 "prompt": prompt,
                 "response": generated_text,
-                "reference_answer": ground_truth,
-                "reference_answer_extracted": reference_answer
+                "answer_extracted": reference_answer,
+                "ground_truth": ground_truth,
             })
 
         results.append({
