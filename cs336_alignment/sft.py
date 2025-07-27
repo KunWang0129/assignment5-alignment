@@ -61,11 +61,13 @@ def main(args):
     train_file_path = "./data/gsm8k/train.jsonl"
     test_file_path = "./data/gsm8k/test.jsonl"
     TEMPLATE_PATH = "cs336_alignment/prompts/r1_zero.prompt" # for testing
-    micro_batch_size = 2
+    micro_batch_size = 8
 
     n_sft_steps = 64
-    n_grad_accum_steps = 32
+    n_grad_accum_steps = 16
     eval_steps = 8
+
+    batch_size = micro_batch_size * n_grad_accum_steps
 
     # input initial policy model
     model = AutoModelForCausalLM.from_pretrained(
