@@ -12,15 +12,14 @@ ANS_RE = re.compile(r"####\s*([\-0-9\.\,]+)")
 
 MODEL_PATH = '/kun-data/assignment5-alignment/models/Qwen/Qwen2.5-Math-1.5B'
 
-def init_policy(debug=False):
+def init_policy(device, debug=False):
     model = AutoModelForCausalLM.from_pretrained(
         MODEL_PATH,
         torch_dtype=torch.bfloat16,
         attn_implementation="flash_attention_2",
+        device_map=device,
     )
     tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
-
-    model.to('cuda:0')
 
     return model, tokenizer
 

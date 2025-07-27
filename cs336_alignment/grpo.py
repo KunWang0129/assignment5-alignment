@@ -97,7 +97,7 @@ def main(args):
     training_data = get_data(train_file_path)
     eval_data = get_data(eval_file_path)
 
-    policy, tokenizer = init_policy()
+    policy, tokenizer = init_policy(device_train)
     device = policy.device
 
     vllm = init_vllm(
