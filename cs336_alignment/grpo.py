@@ -69,7 +69,7 @@ def main(args):
     eval_file_path = "./data/gsm8k/test.jsonl"
     TEMPLATE_PATH = "cs336_alignment/prompts/r1_zero.prompt" # for testing
     seed = 69
-    eval_log_freq = 2
+    eval_log_freq = 10
     eval_sample_size = 1024
     use_std_normalization = True
     os.makedirs(output_dir, exist_ok=True)
@@ -177,7 +177,7 @@ def main(args):
             })
 
             # Save model
-            curr_model_dir = os.path.join(model_dir, f"eval_step_{eval_step}")
+            curr_model_dir = os.path.join(model_dir, f"eval_step_newest")
             policy.save_pretrained(curr_model_dir)
             tokenizer.save_pretrained(curr_model_dir)
             eval_step += 1
