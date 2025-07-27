@@ -18,8 +18,8 @@ from cs336_alignment.sft_helper import (
 
 from utils_gsm8k import (
     load_jsonl,
-    format_prompt_with_template,
-    format_data,
+    format_for_training,
+
 )
 
 from cs336_alignment.vllm_helper import (
@@ -89,15 +89,8 @@ def main(args):
 
     vllm = init_vllm(model_id, device_vllm, seed=SEED, gpu_memory_utilization=0.9)
     # initial sft dataset D
-    train_data = load_jsonl(train_file_path)
-    if num_train_sample is not None:
-        train_data = train_data[:num_train_sample]
-    test_data = load_jsonl(test_file_path)
-    
-    train_data = format_data(
-        data=train_data,
-        prompt_fn=lambda question: format_prompt_with_template(question, TEMPLATE_PATH),
-    )
+    train_data = format_for_training(train_file_path, size=num_train_sample)
+    test_data = format_for_training(test_file_path)
 
     tokenized_train_data = tokenize_prompt_and_output(
         [data["prompt"] for data in train_data],
@@ -107,7 +100,7 @@ def main(args):
     # for k, v in tokenized_train_data.items():
     #     print(v.dtype)
     formatted_test_prompts = [
-        format_prompt_with_template(example["question"], TEMPLATE_PATH) for example in test_data
+        example["prompt"] for example in test_data
     ]
 
     # policy model <- policy model

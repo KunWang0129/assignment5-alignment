@@ -30,10 +30,11 @@ def format_prompt_with_template(question: str, template_path: str) -> str:
         template = f.read()
     return template.format(question=question)
 
-def format_for_training(file_path: str):
+def format_for_training(file_path: str, size = None):
     data = load_jsonl(file_path)
     formatted_data = []
-
+    if size is not None:
+        data = data[:size]
     for ex in data:
         prompt_string = R1_ZERO_PROMPT.format(
             question=ex['question'],
