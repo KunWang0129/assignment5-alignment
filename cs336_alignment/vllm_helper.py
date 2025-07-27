@@ -24,7 +24,12 @@ def init_policy(debug=False):
 
     return model, tokenizer
 
-def init_vllm(model_id: str, device: str, seed: int, gpu_memory_utilization: float = 0.85, debug=False):
+def init_vllm(model_id: str, 
+              device: str, 
+              seed: int, 
+              gpu_memory_utilization: float = 0.85, 
+              debug=False
+              ):
     """
     Start the inference process, here we use vLLM to hold a model on
     a GPU separate from the policy.

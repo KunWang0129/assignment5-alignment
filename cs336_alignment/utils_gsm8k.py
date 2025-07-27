@@ -14,17 +14,19 @@ DATA_PATH = '/kun-data/assignment5-alignment/data/gsm8k/test.jsonl'
 OUTPUT_DIR = '/kun-data/assignment5-alignment/eval_results'
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 OUTPUT_PATH = os.path.join(OUTPUT_DIR, 'gsm8k_qwen_zeroshot_results.jsonl')
+with open('cs336_alignment/prompts/r1_zero.prompt', 'r') as f:
+    R1_ZERO_PROMPT = f.read()
+
 
 def load_jsonl(file_path):
     """Loads gsm8k data from a jsonl file."""
     data = []
-    with open(file_path, "r", encoding="utf-8") as f:
-        for line in f:
-            data.append(json.loads(line.strip()))
-    return data
+    with open(file_path, "r") as f:
+        prompt_data = [json.loads(json_line) for json_line in f]
+    return prompt_data
 
 def format_prompt_with_template(question: str, template_path: str) -> str:
-    with open(template_path, "r", encoding="utf-8") as f:
+    with open(template_path, "r") as f:
         template = f.read()
     return template.format(question=question)
 
@@ -54,17 +56,20 @@ def format_data(
         })
     return formatted_data
 
-def format_for_sft(file_path):
+def format_for_training(file_path: str):
     data = load_jsonl(file_path)
     formatted_data = []
 
     for ex in data:
-        question = ex['question']
-        answer = get_gsm8k_answer(ex['answer'])
+        prompt_string = R1_ZERO_PROMPT.format(
+            question=ex['question'],
+        )
+        answer = ex['answer']
         formatted_data.append({
-            'prompt': f"Question: {question}\nAnswer: ",
-            'response': answer
+            'prompt': prompt_string,
+            'response': answer,
         })
+    return formatted_data
 
 def main():
     """Main function to run the evaluation."""
